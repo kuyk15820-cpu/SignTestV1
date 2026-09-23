@@ -183,14 +183,9 @@ async function loadIpa(file) {
 // --- Sign button readiness ---
 
 function updateSignButton() {
-  const ready =
-    ipaFile !== null &&
-    p12Bytes !== null &&
-    p12Password.value.length > 0 &&
-    profileBytes !== null &&
-    bundleIdInput.value.length > 0;
-  signBtn.disabled = !ready;
-  signBtn.classList.toggle("ready", ready);
+  // 🟢 แก้ไขตรงนี้: อนุญาตให้กดปุ่มได้ตลอดเวลา ไม่ติดปัญหากดไม่ได้
+  signBtn.disabled = false;
+  signBtn.classList.add("ready");
 }
 
 // --- File chooser helpers ---
@@ -237,7 +232,6 @@ async function signIpa() {
   $("#summary").classList.add("hidden");
   $("#plist-output").classList.add("hidden");
   downloadBtn.classList.remove("visible");
-  signBtn.disabled = true;
 
   try {
     // 1. Init WASM
