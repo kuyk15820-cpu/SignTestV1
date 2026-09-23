@@ -183,7 +183,6 @@ async function loadIpa(file) {
 // --- Sign button readiness ---
 
 function updateSignButton() {
-  // 🟢 แก้ไขตรงนี้: อนุญาตให้กดปุ่มได้ตลอดเวลา ไม่ติดปัญหากดไม่ได้
   signBtn.disabled = false;
   signBtn.classList.add("ready");
 }
@@ -225,6 +224,20 @@ bundleIdInput.addEventListener("input", updateSignButton);
 // --- Signing flow ---
 
 async function signIpa() {
+  // 🟢 ป้องกัน Error จากการลืมเลือกไฟล์หรือข้อมูลไม่ครบ
+  if (!ipaFile) {
+    alert("กรุณาเลือกไฟล์ IPA ก่อนครับ");
+    return;
+  }
+  if (!p12Bytes) {
+    alert("กรุณาเลือกไฟล์ใบรับรอง .p12");
+    return;
+  }
+  if (!profileBytes) {
+    alert("กรุณาเลือกไฟล์ Provisioning Profile (.mobileprovision)");
+    return;
+  }
+
   startTime = performance.now();
   const logContainer = $("#log");
   logContainer.classList.add("visible");
@@ -232,6 +245,8 @@ async function signIpa() {
   $("#summary").classList.add("hidden");
   $("#plist-output").classList.add("hidden");
   downloadBtn.classList.remove("visible");
+
+  let signer = null;
 
   try {
     // 1. Init WASM
@@ -244,7 +259,7 @@ async function signIpa() {
     // 2. Create signer with credentials
     section("▸ Loading signing credentials");
     const password = p12Password.value;
-    const signer = new WasmSigner(p12Bytes, password, profileBytes);
+    signer = new WasmSigner(p12Bytes, password, profileBytes);
     const teamId = signer.team_id();
     if (teamId) {
       log(`Team ID: ${teamId}`, "ok");
@@ -272,7 +287,7 @@ async function signIpa() {
     )[1];
     log(`Bundle: ${currentAppName}.app`, "ok");
 
-    // Determine main executable name from Info.plist
+    // Determine main executable name from Info.plist (ส่ง wasmReady = true เพื่อป้องกันการอ่าน bplist พลาด)
     let mainExecName = currentAppName;
     const infoPlistEntry = entries.find(
       (e) => e.filename === `${currentAppPrefix}Info.plist`,
@@ -280,7 +295,7 @@ async function signIpa() {
     let infoPlistData = null;
     if (infoPlistEntry) {
       infoPlistData = await infoPlistEntry.getData(new Uint8ArrayWriter());
-      const execName = tryExtractExecutableName(infoPlistData);
+      const execName = tryExtractExecutableName(infoPlistData, true);
       if (execName) mainExecName = execName;
     }
 
@@ -329,7 +344,6 @@ async function signIpa() {
       section(`▸ Signing ${dylibsToSign.length} dylibs/frameworks`);
       for (const relPath of dylibsToSign) {
         const data = fileMap.get(relPath);
-        // Use filename as identifier for dylibs
         const identifier = relPath.split("/").pop().replace(/\.dylib$/, "");
         try {
           const signed = signer.sign_macho_fat(data, identifier, null, null);
@@ -337,14 +351,13 @@ async function signIpa() {
           log(`  ✓ ${relPath} (${formatSize(data.length)} → ${formatSize(signed.length)})`);
         } catch (e) {
           log(`  ✗ ${relPath}: ${e.message}`, "err");
-          // Keep original if signing fails
           signedFiles.set(relPath, data);
         }
       }
       log(`Signed ${dylibsToSign.length} dylibs/frameworks`, "ok");
     }
 
-    // 6. Hash all files for CodeResources (using signed versions where available)
+    // 6. Hash all files for CodeResources
     section("▸ Hashing bundle resources for CodeResources");
     signer.set_main_executable(mainExecName);
 
@@ -352,7 +365,6 @@ async function signIpa() {
     let totalBytes = 0;
 
     for (const [relPath, data] of fileMap) {
-      // Skip _CodeSignature (will be regenerated) and old mobileprovision
       if (relPath.startsWith("_CodeSignature/")) continue;
       if (relPath === "embedded.mobileprovision") continue;
 
@@ -365,7 +377,6 @@ async function signIpa() {
         log(`  hashed ${filesHashed} files…`);
       }
     }
-    // Hash the new provisioning profile
     signer.hash_file("embedded.mobileprovision", profileBytes);
     filesHashed++;
     totalBytes += profileBytes.length;
@@ -408,19 +419,15 @@ async function signIpa() {
       dataDescriptor: false,
     });
 
-    // Unix permissions encoded as externalFileAttributes (mode << 16)
     const UNIX_FILE_0644 = 0o100644 << 16;
     const UNIX_DIR_0755 = 0o40755 << 16;
-    // versionMadeBy: Unix (system=3) + zip version 2.0 (20)
     const VERSION_UNIX_20 = (3 << 8) | 20;
 
     let filesWritten = 0;
     for (const entry of entries) {
-      // Skip __MACOSX resource fork entries — iOS rejects these
       if (entry.filename.startsWith("__MACOSX/")) continue;
 
       if (entry.directory) {
-        // Skip old _CodeSignature directory (will be recreated)
         if (entry.filename.startsWith(currentAppPrefix) &&
             entry.filename.slice(currentAppPrefix.length).startsWith("_CodeSignature")) {
           continue;
@@ -440,11 +447,9 @@ async function signIpa() {
         : null;
 
       if (isInBundle && relativePath) {
-        // Skip old _CodeSignature (dir + files) and embedded.mobileprovision
         if (relativePath === "_CodeSignature" || relativePath.startsWith("_CodeSignature/")) continue;
         if (relativePath === "embedded.mobileprovision") continue;
 
-        // Use signed version if available
         const data = signedFiles.get(relativePath) || fileMap.get(relativePath);
         if (data) {
           await zipWriter.add(
@@ -461,7 +466,6 @@ async function signIpa() {
         }
       }
 
-      // Non-bundle files: copy as-is
       const data = await entry.getData(new Uint8ArrayWriter());
       await zipWriter.add(entry.filename, new Uint8ArrayReader(data), {
         externalFileAttributes: entry.externalFileAttributes || UNIX_FILE_0644,
@@ -471,7 +475,6 @@ async function signIpa() {
       filesWritten++;
     }
 
-    // Add _CodeSignature/ directory entry
     await zipWriter.add(
       `${currentAppPrefix}_CodeSignature/`,
       undefined,
@@ -482,7 +485,6 @@ async function signIpa() {
       },
     );
 
-    // Add new CodeResources
     await zipWriter.add(
       `${currentAppPrefix}_CodeSignature/CodeResources`,
       new Uint8ArrayReader(codeResourcesBytes),
@@ -493,7 +495,6 @@ async function signIpa() {
     );
     filesWritten++;
 
-    // Add provisioning profile
     await zipWriter.add(
       `${currentAppPrefix}embedded.mobileprovision`,
       new Uint8ArrayReader(profileBytes),
@@ -508,7 +509,6 @@ async function signIpa() {
     log(`Wrote ${filesWritten} files (${formatSize(blob.size)})`, "ok");
 
     await zipReader.close();
-    signer.free();
 
     // 10. Offer download
     const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
@@ -533,6 +533,12 @@ async function signIpa() {
     log(`Error: ${e.message || e}`, "err");
     console.error(e);
   } finally {
+    // 🟢 คืนค่า Memory ของ WASM ทุกครั้งที่จบการทำงาน (ไม่ว่าจะสำเร็จหรือพัง)
+    if (signer) {
+      try {
+        signer.free();
+      } catch (_) {}
+    }
     updateSignButton();
   }
 }
