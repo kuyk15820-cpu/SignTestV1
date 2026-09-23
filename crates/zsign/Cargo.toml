@@ -1,0 +1,35 @@
+[package]
+name = "zsign-rs"
+version = "0.1.2"
+edition = "2021"
+authors = ["jveko"]
+description = "Cross-platform iOS code signing library - Rust port of zsign"
+documentation = "https://docs.rs/zsign-rs"
+readme = "../../README.md"
+homepage = "https://github.com/jveko/zsign-rs"
+repository = "https://github.com/jveko/zsign-rs"
+license = "MIT"
+keywords = ["ios", "codesign", "macho", "ipa", "signing"]
+categories = ["command-line-utilities", "cryptography", "development-tools"]
+
+[dependencies]
+zsign-core = { path = "../zsign-core", version = "0.1.0" }
+goblin = "0.10"
+zip = { version = "7.0", default-features = false, features = ["deflate-flate2-zlib-rs", "zstd", "time"] }
+plist = "1.7"
+# sha1 intentionally portable: the `asm` feature is broken on aarch64.
+sha1 = { version = "0.10" }
+sha2 = { version = "0.10", features = ["asm"] }
+thiserror = "2.0"
+memmap2 = "0.9"
+walkdir = "2.5"
+tempfile = "3.10"
+base64 = "0.22"
+rayon = "1.11"
+
+[dev-dependencies]
+rand = "0.8"
+rsa = { version = "0.9", features = ["sha2"] }
+sha2 = "0.10"
+spki = { version = "0.7", features = ["alloc"] }
+x509-cert = { version = "0.2.5", features = ["builder"] }
