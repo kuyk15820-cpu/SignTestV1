@@ -2,14 +2,6 @@ import initWasm, { WasmSigner } from "zsign-wasm";
 import wasmUrl from "zsign-wasm/zsign_wasm_bg.wasm?url";
 import * as zip from "@zip.js/zip.js";
 
-// ดึง Class มาใช้งานเพื่อป้องกันปัญหา undefined จาก Vite/Bundler
-const ZipReader = zip.ZipReader;
-const ZipWriter = zip.ZipWriter;
-const BlobReader = zip.BlobReader;
-const BlobWriter = zip.BlobWriter;
-const Uint8ArrayReader = zip.Uint8ArrayReader;
-const Uint8ArrayWriter = zip.Uint8ArrayWriter;
-
 const $ = (sel) => document.querySelector(sel);
 const logEl = $("#log-lines");
 let startTime;
@@ -83,7 +75,6 @@ function tryExtractBundleId(plistData, wasmReady) {
       // fall through to text-based fallback
     }
   }
-  // Fallback: try XML regex
   const text = new TextDecoder("utf-8", { fatal: false }).decode(plistData);
   const xmlMatch = text.match(
     /<key>CFBundleIdentifier<\/key>\s*<string>([^<]+)<\/string>/,
@@ -120,7 +111,7 @@ async function loadIpa(file) {
 
   section(`▸ Reading ${file.name} (${formatSize(file.size)})`);
 
-  // Init WASM early so we can parse binary plists
+  // Init WASM early
   let wasmReady = false;
   try {
     const wasmResponse = await fetch(wasmUrl);
@@ -133,7 +124,7 @@ async function loadIpa(file) {
   }
 
   try {
-    const zipReader = new ZipReader(new BlobReader(file));
+    const zipReader = new zip.ZipReader(new zip.BlobReader(file));
     const entries = await zipReader.getEntries();
     log(`Found ${entries.length} entries in archive`);
 
@@ -156,7 +147,7 @@ async function loadIpa(file) {
       (e) => e.filename === `${appPrefix}Info.plist`,
     );
     if (infoPlistEntry) {
-      const plistData = await infoPlistEntry.getData(new Uint8ArrayWriter());
+      const plistData = await infoPlistEntry.getData(new zip.Uint8ArrayWriter());
       const bundleId = tryExtractBundleId(plistData, wasmReady);
       if (bundleId) {
         bundleIdInput.value = bundleId;
@@ -282,7 +273,7 @@ async function signIpa() {
 
     // 3. Extract IPA
     section(`▸ Extracting ${ipaFile.name} (${formatSize(ipaFile.size)})`);
-    zipReader = new ZipReader(new BlobReader(ipaFile));
+    zipReader = new zip.ZipReader(new zip.BlobReader(ipaFile));
     const entries = await zipReader.getEntries();
     log(`Found ${entries.length} entries in archive`);
 
@@ -308,7 +299,7 @@ async function signIpa() {
     );
     let infoPlistData = null;
     if (infoPlistEntry) {
-      infoPlistData = await infoPlistEntry.getData(new Uint8ArrayWriter());
+      infoPlistData = await infoPlistEntry.getData(new zip.Uint8ArrayWriter());
       const execName = tryExtractExecutableName(infoPlistData, true);
       if (execName) mainExecName = execName;
     }
@@ -319,15 +310,15 @@ async function signIpa() {
       (e) => e.filename.startsWith(currentAppPrefix) && !e.directory,
     );
 
-    const fileMap = new Map(); // relativePath -> Uint8Array
-    const machoFiles = []; // relativePaths of Mach-O files
+    const fileMap = new Map();
+    const machoFiles = [];
     let mainExecPath = null;
 
     for (const entry of bundleEntries) {
       const relativePath = entry.filename.slice(currentAppPrefix.length);
       if (!relativePath) continue;
 
-      const data = await entry.getData(new Uint8ArrayWriter());
+      const data = await entry.getData(new zip.Uint8ArrayWriter());
       fileMap.set(relativePath, data);
 
       if (isMachO(data)) {
@@ -341,17 +332,9 @@ async function signIpa() {
       `Read ${fileMap.size} files, ${machoFiles.length} Mach-O binaries`,
       "ok",
     );
-    if (mainExecPath) {
-      log(`Main executable: ${mainExecPath}`, "ok");
-    } else {
-      log(
-        `Warning: main executable "${mainExecName}" not found as Mach-O`,
-        "err",
-      );
-    }
 
-    // 5. Sign dylibs/frameworks first (everything except main executable)
-    const signedFiles = new Map(); // relativePath -> signed Uint8Array
+    // 5. Sign dylibs/frameworks first
+    const signedFiles = new Map();
     const dylibsToSign = machoFiles.filter((p) => p !== mainExecPath);
 
     if (dylibsToSign.length > 0) {
@@ -371,7 +354,7 @@ async function signIpa() {
       log(`Signed ${dylibsToSign.length} dylibs/frameworks`, "ok");
     }
 
-    // 6. Hash all files for CodeResources
+    // 6. Hash all files
     section("▸ Hashing bundle resources for CodeResources");
     signer.set_main_executable(mainExecName);
 
@@ -386,10 +369,6 @@ async function signIpa() {
       totalBytes += fileData.length;
       signer.hash_file(relPath, fileData);
       filesHashed++;
-
-      if (filesHashed % 100 === 0) {
-        log(`  hashed ${filesHashed} files…`);
-      }
     }
     signer.hash_file("embedded.mobileprovision", profileBytes);
     filesHashed++;
@@ -429,7 +408,7 @@ async function signIpa() {
 
     // 9. Build output ZIP
     section("▸ Creating signed IPA");
-    const zipWriter = new ZipWriter(new BlobWriter("application/zip"), {
+    const zipWriter = new zip.ZipWriter(new zip.BlobWriter("application/zip"), {
       dataDescriptor: false,
     });
 
@@ -468,7 +447,7 @@ async function signIpa() {
         if (data) {
           await zipWriter.add(
             entry.filename,
-            new Uint8ArrayReader(data),
+            new zip.Uint8ArrayReader(data),
             {
               externalFileAttributes: entry.externalFileAttributes || UNIX_FILE_0644,
               lastModDate: entry.lastModDate,
@@ -480,8 +459,8 @@ async function signIpa() {
         }
       }
 
-      const data = await entry.getData(new Uint8ArrayWriter());
-      await zipWriter.add(entry.filename, new Uint8ArrayReader(data), {
+      const data = await entry.getData(new zip.Uint8ArrayWriter());
+      await zipWriter.add(entry.filename, new zip.Uint8ArrayReader(data), {
         externalFileAttributes: entry.externalFileAttributes || UNIX_FILE_0644,
         lastModDate: entry.lastModDate,
         versionMadeBy: VERSION_UNIX_20,
@@ -489,21 +468,17 @@ async function signIpa() {
       filesWritten++;
     }
 
-    // Add _CodeSignature/ directory entry
-    await zipWriter.add(
-      `${currentAppPrefix}_CodeSignature/`,
-      undefined,
-      {
-        directory: true,
-        externalFileAttributes: UNIX_DIR_0755,
-        versionMadeBy: VERSION_UNIX_20,
-      },
-    );
+    // Add _CodeSignature/
+    await zipWriter.add(`${currentAppPrefix}_CodeSignature/`, undefined, {
+      directory: true,
+      externalFileAttributes: UNIX_DIR_0755,
+      versionMadeBy: VERSION_UNIX_20,
+    });
 
-    // Add new CodeResources
+    // Add CodeResources
     await zipWriter.add(
       `${currentAppPrefix}_CodeSignature/CodeResources`,
-      new Uint8ArrayReader(codeResourcesBytes),
+      new zip.Uint8ArrayReader(codeResourcesBytes),
       {
         externalFileAttributes: UNIX_FILE_0644,
         versionMadeBy: VERSION_UNIX_20,
@@ -511,10 +486,10 @@ async function signIpa() {
     );
     filesWritten++;
 
-    // Add provisioning profile
+    // Add embedded.mobileprovision
     await zipWriter.add(
       `${currentAppPrefix}embedded.mobileprovision`,
-      new Uint8ArrayReader(profileBytes),
+      new zip.Uint8ArrayReader(profileBytes),
       {
         externalFileAttributes: UNIX_FILE_0644,
         versionMadeBy: VERSION_UNIX_20,
@@ -585,7 +560,6 @@ if (fileInput) {
   });
 }
 
-// Event handler สำหรับปุ่ม Sign พร้อมระบบตรวจสอบสาเหตุถ้ากดไม่ได้
 if (signBtn) {
   signBtn.addEventListener("click", () => {
     let missing = [];
