@@ -37,12 +37,15 @@ const downloadBtn = $("#download-btn");
 // --- Logging ---
 
 function log(msg, cls = "") {
-  const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
-  const line = document.createElement("div");
-  line.className = `log-line ${cls}`;
-  line.innerHTML = `<span class="ts">[${elapsed}s]</span><span class="msg">${msg}</span>`;
-  logEl.appendChild(line);
-  logEl.scrollTop = logEl.scrollHeight;
+  const elapsed = startTime ? ((performance.now() - startTime) / 1000).toFixed(2) : "0.00";
+  if (logEl) {
+    const line = document.createElement("div");
+    line.className = `log-line ${cls}`;
+    line.innerHTML = `<span class="ts">[${elapsed}s]</span><span class="msg">${msg}</span>`;
+    logEl.appendChild(line);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+  console.log(`[${elapsed}s] [${cls || "info"}] ${msg}`);
 }
 
 function section(msg) {
@@ -58,7 +61,7 @@ function formatSize(bytes) {
 // --- Mach-O detection ---
 
 function isMachO(data) {
-  if (data.length < 4) return false;
+  if (!data || data.length < 4) return false;
   const magic =
     (data[0] << 24) | (data[1] << 16) | (data[2] << 8) | data[3];
   return [
@@ -108,11 +111,11 @@ function tryExtractExecutableName(plistData, wasmReady) {
 async function loadIpa(file) {
   startTime = performance.now();
   const logContainer = $("#log");
-  logContainer.classList.add("visible");
-  logEl.innerHTML = "";
-  $("#summary").classList.add("hidden");
-  $("#plist-output").classList.add("hidden");
-  downloadBtn.classList.remove("visible");
+  if (logContainer) logContainer.classList.add("visible");
+  if (logEl) logEl.innerHTML = "";
+  if ($("#summary")) $("#summary").classList.add("hidden");
+  if ($("#plist-output")) $("#plist-output").classList.add("hidden");
+  if (downloadBtn) downloadBtn.classList.remove("visible");
 
   section(`▸ Reading ${file.name} (${formatSize(file.size)})`);
 
@@ -128,67 +131,74 @@ async function loadIpa(file) {
     log("WASM not loaded yet — using fallback plist parser");
   }
 
-  const zipReader = new ZipReader(new BlobReader(file));
-  const entries = await zipReader.getEntries();
-  log(`Found ${entries.length} entries in archive`);
+  try {
+    const zipReader = new ZipReader(new BlobReader(file));
+    const entries = await zipReader.getEntries();
+    log(`Found ${entries.length} entries in archive`);
 
-  // Find .app bundle root
-  const appEntry = entries.find((e) =>
-    e.filename.match(/Payload\/[^/]+\.app\/$/),
-  );
-  if (!appEntry) {
-    log("No .app bundle found in IPA", "err");
-    await zipReader.close();
-    return;
-  }
-  appPrefix = appEntry.filename;
-  appName = appPrefix.match(/\/([^/]+)\.app\/$/)[1];
-  log(`Found bundle: ${appName}.app`, "ok");
+    // Find .app bundle root
+    const appEntry = entries.find((e) =>
+      e.filename.match(/Payload\/[^/]+\.app\/$/),
+    );
+    if (!appEntry) {
+      log("No .app bundle found in IPA", "err");
+      alert("ไฟล์นี้ไม่ใช่ IPA ที่ถูกต้อง (ไม่พบโฟลเดอร์ Payload/*.app)");
+      await zipReader.close();
+      return;
+    }
+    appPrefix = appEntry.filename;
+    appName = appPrefix.match(/\/([^/]+)\.app\/$/)[1];
+    log(`Found bundle: ${appName}.app`, "ok");
 
-  // Read Info.plist to extract bundle ID
-  const infoPlistEntry = entries.find(
-    (e) => e.filename === `${appPrefix}Info.plist`,
-  );
-  if (infoPlistEntry) {
-    const plistData = await infoPlistEntry.getData(new Uint8ArrayWriter());
-    const bundleId = tryExtractBundleId(plistData, wasmReady);
-    if (bundleId) {
-      bundleIdInput.value = bundleId;
-      log(`Bundle ID: ${bundleId}`, "ok");
+    // Read Info.plist to extract bundle ID
+    const infoPlistEntry = entries.find(
+      (e) => e.filename === `${appPrefix}Info.plist`,
+    );
+    if (infoPlistEntry) {
+      const plistData = await infoPlistEntry.getData(new Uint8ArrayWriter());
+      const bundleId = tryExtractBundleId(plistData, wasmReady);
+      if (bundleId) {
+        bundleIdInput.value = bundleId;
+        log(`Bundle ID: ${bundleId}`, "ok");
+      } else {
+        bundleIdInput.value = "";
+        log("Could not auto-detect bundle ID — please enter manually", "err");
+      }
+      const execName = tryExtractExecutableName(plistData, wasmReady);
+      if (execName && execName !== appName) {
+        log(`CFBundleExecutable: ${execName} (differs from .app name)`, "ok");
+      }
     } else {
-      bundleIdInput.value = "";
-      log("Could not auto-detect bundle ID — please enter manually", "err");
+      log("Info.plist not found in bundle", "err");
     }
-    const execName = tryExtractExecutableName(plistData, wasmReady);
-    if (execName && execName !== appName) {
-      log(`CFBundleExecutable: ${execName} (differs from .app name)`, "ok");
-    }
-  } else {
-    log("Info.plist not found in bundle", "err");
+
+    await zipReader.close();
+    ipaFile = file;
+
+    // Update UI
+    if (dropZone) dropZone.classList.add("loaded");
+    if (dropLabel) dropLabel.textContent = `${file.name} loaded`;
+    if (configSection) configSection.classList.add("visible");
+    updateSignButton();
+  } catch (err) {
+    log(`Error loading IPA: ${err.message || err}`, "err");
+    alert(`ไม่สามารถอ่านไฟล์ IPA ได้: ${err.message || err}`);
   }
-
-  await zipReader.close();
-
-  ipaFile = file;
-
-  // Update UI
-  dropZone.classList.add("loaded");
-  dropLabel.textContent = `${file.name} loaded`;
-  configSection.classList.add("visible");
-  updateSignButton();
 }
 
 // --- Sign button readiness ---
 
 function updateSignButton() {
-  const ready =
+  const isReady =
     ipaFile !== null &&
     p12Bytes !== null &&
-    p12Password.value.length > 0 &&
+    p12Password.value.trim().length > 0 &&
     profileBytes !== null &&
-    bundleIdInput.value.length > 0;
-  signBtn.disabled = !ready;
-  signBtn.classList.toggle("ready", ready);
+    bundleIdInput.value.trim().length > 0;
+  
+  if (signBtn) {
+    signBtn.classList.toggle("ready", isReady);
+  }
 }
 
 // --- File chooser helpers ---
@@ -202,40 +212,51 @@ function readFileAsUint8Array(file) {
   });
 }
 
-p12Btn.addEventListener("click", () => p12Input.click());
-p12Input.addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  p12Bytes = await readFileAsUint8Array(file);
-  p12Btn.textContent = file.name;
-  p12Btn.classList.add("has-file");
-  updateSignButton();
-});
+if (p12Btn) p12Btn.addEventListener("click", () => p12Input.click());
+if (p12Input) {
+  p12Input.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      p12Bytes = await readFileAsUint8Array(file);
+      p12Btn.textContent = file.name;
+      p12Btn.classList.add("has-file");
+      updateSignButton();
+    } catch (err) {
+      alert("ไม่สามารถโหลดไฟล์ .p12 ได้");
+    }
+  });
+}
 
-profileBtn.addEventListener("click", () => profileInput.click());
-profileInput.addEventListener("change", async (e) => {
-  const file = e.target.files[0];
-  if (!file) return;
-  profileBytes = await readFileAsUint8Array(file);
-  profileBtn.textContent = file.name;
-  profileBtn.classList.add("has-file");
-  updateSignButton();
-});
+if (profileBtn) profileBtn.addEventListener("click", () => profileInput.click());
+if (profileInput) {
+  profileInput.addEventListener("change", async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    try {
+      profileBytes = await readFileAsUint8Array(file);
+      profileBtn.textContent = file.name;
+      profileBtn.classList.add("has-file");
+      updateSignButton();
+    } catch (err) {
+      alert("ไม่สามารถโหลดไฟล์ .mobileprovision ได้");
+    }
+  });
+}
 
-p12Password.addEventListener("input", updateSignButton);
-bundleIdInput.addEventListener("input", updateSignButton);
+if (p12Password) p12Password.addEventListener("input", updateSignButton);
+if (bundleIdInput) bundleIdInput.addEventListener("input", updateSignButton);
 
 // --- Signing flow ---
 
 async function signIpa() {
   startTime = performance.now();
   const logContainer = $("#log");
-  logContainer.classList.add("visible");
-  logEl.innerHTML = "";
-  $("#summary").classList.add("hidden");
-  $("#plist-output").classList.add("hidden");
-  downloadBtn.classList.remove("visible");
-  signBtn.disabled = true;
+  if (logContainer) logContainer.classList.add("visible");
+  if (logEl) logEl.innerHTML = "";
+  if ($("#summary")) $("#summary").classList.add("hidden");
+  if ($("#plist-output")) $("#plist-output").classList.add("hidden");
+  if (downloadBtn) downloadBtn.classList.remove("visible");
 
   let signer = null;
   let zipReader = null;
@@ -250,7 +271,7 @@ async function signIpa() {
 
     // 2. Create signer with credentials
     section("▸ Loading signing credentials");
-    const password = p12Password.value;
+    const password = p12Password.value.trim();
     signer = new WasmSigner(p12Bytes, password, profileBytes);
     const teamId = signer.team_id();
     if (teamId) {
@@ -270,6 +291,7 @@ async function signIpa() {
     );
     if (!appEntry) {
       log("No .app bundle found in IPA", "err");
+      alert("ไม่พบโฟลเดอร์ .app ใน IPA");
       return;
     }
     const currentAppPrefix = appEntry.filename;
@@ -385,7 +407,7 @@ async function signIpa() {
     if (mainExecPath) {
       section("▸ Signing main executable");
       const mainData = signedFiles.get(mainExecPath) || fileMap.get(mainExecPath);
-      const bundleId = bundleIdInput.value;
+      const bundleId = bundleIdInput.value.trim();
       try {
         const signed = signer.sign_macho_fat(
           mainData,
@@ -507,23 +529,29 @@ async function signIpa() {
     log(`Done in ${elapsed}s ✓`, "ok");
 
     const summaryEl = $("#summary");
-    summaryEl.classList.remove("hidden");
-    summaryEl.innerHTML = `
-      <div class="stat"><div class="value">${fileMap.size}</div><div class="label">Files Processed</div></div>
-      <div class="stat"><div class="value">${machoFiles.length}</div><div class="label">Mach-O Signed</div></div>
-      <div class="stat"><div class="value">${formatSize(blob.size)}</div><div class="label">Output Size</div></div>
-      <div class="stat"><div class="value">${elapsed}s</div><div class="label">Elapsed</div></div>
-    `;
+    if (summaryEl) {
+      summaryEl.classList.remove("hidden");
+      summaryEl.innerHTML = `
+        <div class="stat"><div class="value">${fileMap.size}</div><div class="label">Files Processed</div></div>
+        <div class="stat"><div class="value">${machoFiles.length}</div><div class="label">Mach-O Signed</div></div>
+        <div class="stat"><div class="value">${formatSize(blob.size)}</div><div class="label">Output Size</div></div>
+        <div class="stat"><div class="value">${elapsed}s</div><div class="label">Elapsed</div></div>
+      `;
+    }
 
     const url = URL.createObjectURL(blob);
     const outputName = ipaFile.name.replace(/\.ipa$/i, "_signed.ipa");
-    downloadBtn.href = url;
-    downloadBtn.download = outputName;
-    downloadBtn.textContent = `⬇ Download ${outputName}`;
-    downloadBtn.classList.add("visible");
+    if (downloadBtn) {
+      downloadBtn.href = url;
+      downloadBtn.download = outputName;
+      downloadBtn.textContent = `⬇ Download ${outputName}`;
+      downloadBtn.classList.add("visible");
+    }
+    alert(`Sign สำเร็จแล้ว! กดปุ่ม Download เพื่อรับไฟล์ ${outputName}`);
   } catch (e) {
     log(`Error: ${e.message || e}`, "err");
     console.error(e);
+    alert(`เกิดข้อผิดพลาดระหว่าง Sign:\n${e.message || e}`);
   } finally {
     if (zipReader) await zipReader.close().catch(() => {});
     if (signer) signer.free();
@@ -531,26 +559,46 @@ async function signIpa() {
   }
 }
 
-// --- Wire up drop zone ---
+// --- Wire up drop zone & Events ---
 
-dropZone.addEventListener("dragover", (e) => {
-  e.preventDefault();
-  dropZone.classList.add("dragover");
-});
-dropZone.addEventListener("dragleave", () =>
-  dropZone.classList.remove("dragover"),
-);
-dropZone.addEventListener("drop", (e) => {
-  e.preventDefault();
-  dropZone.classList.remove("dragover");
-  const file = e.dataTransfer.files[0];
-  if (file) loadIpa(file);
-});
-fileInput.addEventListener("change", (e) => {
-  const file = e.target.files[0];
-  if (file) loadIpa(file);
-});
+if (dropZone) {
+  dropZone.addEventListener("dragover", (e) => {
+    e.preventDefault();
+    dropZone.classList.add("dragover");
+  });
+  dropZone.addEventListener("dragleave", () =>
+    dropZone.classList.remove("dragover"),
+  );
+  dropZone.addEventListener("drop", (e) => {
+    e.preventDefault();
+    dropZone.classList.remove("dragover");
+    const file = e.dataTransfer.files[0];
+    if (file) loadIpa(file);
+  });
+}
 
-signBtn.addEventListener("click", () => {
-  if (!signBtn.disabled) signIpa();
-});
+if (fileInput) {
+  fileInput.addEventListener("change", (e) => {
+    const file = e.target.files[0];
+    if (file) loadIpa(file);
+  });
+}
+
+// Event handler สำหรับปุ่ม Sign พร้อมระบบตรวจสอบสาเหตุถ้ากดไม่ได้
+if (signBtn) {
+  signBtn.addEventListener("click", () => {
+    let missing = [];
+    if (!ipaFile) missing.push("ไฟล์ IPA");
+    if (!p12Bytes) missing.push("ไฟล์ใบรับรอง (.p12)");
+    if (!p12Password.value.trim()) missing.push("รหัสผ่านไฟล์ .p12");
+    if (!profileBytes) missing.push("ไฟล์ Provisioning Profile (.mobileprovision)");
+    if (!bundleIdInput.value.trim()) missing.push("Bundle ID");
+
+    if (missing.length > 0) {
+      alert("กรุณาระบุข้อมูลให้ครบถ้วนก่อน Sign:\n- " + missing.join("\n- "));
+      return;
+    }
+
+    signIpa();
+  });
+}
