@@ -15,7 +15,6 @@ let startTime;
 
 // --- State ---
 let ipaFile = null;
-let ipaEntries = null;
 let appPrefix = "";
 let appName = "";
 let p12Bytes = null;
@@ -107,11 +106,6 @@ function tryExtractExecutableName(plistData, wasmReady) {
 // --- IPA loading ---
 
 async function loadIpa(file) {
-  if (!file) return;
-
-  // ตั้งค่า ipaFile ทันทีเพื่อป้องกัน State หลุด
-  ipaFile = file;
-
   startTime = performance.now();
   const logContainer = $("#log");
   logContainer.classList.add("visible");
@@ -134,67 +128,67 @@ async function loadIpa(file) {
     log("WASM not loaded yet — using fallback plist parser");
   }
 
-  try {
-    const zipReader = new ZipReader(new BlobReader(file));
-    const entries = await zipReader.getEntries();
-    log(`Found ${entries.length} entries in archive`);
+  const zipReader = new ZipReader(new BlobReader(file));
+  const entries = await zipReader.getEntries();
+  log(`Found ${entries.length} entries in archive`);
 
-    // Find .app bundle root
-    const appEntry = entries.find((e) =>
-      e.filename.match(/Payload\/[^/]+\.app\/$/),
-    );
-    if (!appEntry) {
-      log("No .app bundle found in IPA", "err");
-      await zipReader.close();
-      ipaFile = null;
-      return;
-    }
-    appPrefix = appEntry.filename;
-    appName = appPrefix.match(/\/([^/]+)\.app\/$/)[1];
-    log(`Found bundle: ${appName}.app`, "ok");
-
-    // Read Info.plist to extract bundle ID
-    const infoPlistEntry = entries.find(
-      (e) => e.filename === `${appPrefix}Info.plist`,
-    );
-    if (infoPlistEntry) {
-      const plistData = await infoPlistEntry.getData(new Uint8ArrayWriter());
-      const bundleId = tryExtractBundleId(plistData, wasmReady);
-      if (bundleId) {
-        bundleIdInput.value = bundleId;
-        log(`Bundle ID: ${bundleId}`, "ok");
-      } else {
-        bundleIdInput.value = "";
-        log("Could not auto-detect bundle ID — please enter manually", "err");
-      }
-      const execName = tryExtractExecutableName(plistData, wasmReady);
-      if (execName && execName !== appName) {
-        log(`CFBundleExecutable: ${execName} (differs from .app name)`, "ok");
-      }
-    } else {
-      log("Info.plist not found in bundle", "err");
-    }
-
+  // Find .app bundle root
+  const appEntry = entries.find((e) =>
+    e.filename.match(/Payload\/[^/]+\.app\/$/),
+  );
+  if (!appEntry) {
+    log("No .app bundle found in IPA", "err");
     await zipReader.close();
-
-    ipaEntries = null; // will re-read during signing
-
-    // Update UI
-    dropZone.classList.add("loaded");
-    dropLabel.textContent = `${file.name} loaded`;
-    configSection.classList.add("visible");
-    updateSignButton();
-  } catch (err) {
-    log(`Failed to read IPA: ${err.message}`, "err");
-    ipaFile = null;
+    return;
   }
+  appPrefix = appEntry.filename;
+  appName = appPrefix.match(/\/([^/]+)\.app\/$/)[1];
+  log(`Found bundle: ${appName}.app`, "ok");
+
+  // Read Info.plist to extract bundle ID
+  const infoPlistEntry = entries.find(
+    (e) => e.filename === `${appPrefix}Info.plist`,
+  );
+  if (infoPlistEntry) {
+    const plistData = await infoPlistEntry.getData(new Uint8ArrayWriter());
+    const bundleId = tryExtractBundleId(plistData, wasmReady);
+    if (bundleId) {
+      bundleIdInput.value = bundleId;
+      log(`Bundle ID: ${bundleId}`, "ok");
+    } else {
+      bundleIdInput.value = "";
+      log("Could not auto-detect bundle ID — please enter manually", "err");
+    }
+    const execName = tryExtractExecutableName(plistData, wasmReady);
+    if (execName && execName !== appName) {
+      log(`CFBundleExecutable: ${execName} (differs from .app name)`, "ok");
+    }
+  } else {
+    log("Info.plist not found in bundle", "err");
+  }
+
+  await zipReader.close();
+
+  ipaFile = file;
+
+  // Update UI
+  dropZone.classList.add("loaded");
+  dropLabel.textContent = `${file.name} loaded`;
+  configSection.classList.add("visible");
+  updateSignButton();
 }
 
 // --- Sign button readiness ---
 
 function updateSignButton() {
-  signBtn.disabled = false;
-  signBtn.classList.add("ready");
+  const ready =
+    ipaFile !== null &&
+    p12Bytes !== null &&
+    p12Password.value.length > 0 &&
+    profileBytes !== null &&
+    bundleIdInput.value.length > 0;
+  signBtn.disabled = !ready;
+  signBtn.classList.toggle("ready", ready);
 }
 
 // --- File chooser helpers ---
@@ -234,19 +228,6 @@ bundleIdInput.addEventListener("input", updateSignButton);
 // --- Signing flow ---
 
 async function signIpa() {
-  if (!ipaFile) {
-    alert("กรุณาเลือกไฟล์ IPA ก่อนครับ");
-    return;
-  }
-  if (!p12Bytes) {
-    alert("กรุณาเลือกไฟล์ใบรับรอง .p12");
-    return;
-  }
-  if (!profileBytes) {
-    alert("กรุณาเลือกไฟล์ Provisioning Profile (.mobileprovision)");
-    return;
-  }
-
   startTime = performance.now();
   const logContainer = $("#log");
   logContainer.classList.add("visible");
@@ -254,8 +235,10 @@ async function signIpa() {
   $("#summary").classList.add("hidden");
   $("#plist-output").classList.add("hidden");
   downloadBtn.classList.remove("visible");
+  signBtn.disabled = true;
 
   let signer = null;
+  let zipReader = null;
 
   try {
     // 1. Init WASM
@@ -277,7 +260,7 @@ async function signIpa() {
 
     // 3. Extract IPA
     section(`▸ Extracting ${ipaFile.name} (${formatSize(ipaFile.size)})`);
-    const zipReader = new ZipReader(new BlobReader(ipaFile));
+    zipReader = new ZipReader(new BlobReader(ipaFile));
     const entries = await zipReader.getEntries();
     log(`Found ${entries.length} entries in archive`);
 
@@ -287,7 +270,6 @@ async function signIpa() {
     );
     if (!appEntry) {
       log("No .app bundle found in IPA", "err");
-      await zipReader.close();
       return;
     }
     const currentAppPrefix = appEntry.filename;
@@ -484,6 +466,7 @@ async function signIpa() {
       filesWritten++;
     }
 
+    // Add _CodeSignature/ directory entry
     await zipWriter.add(
       `${currentAppPrefix}_CodeSignature/`,
       undefined,
@@ -494,6 +477,7 @@ async function signIpa() {
       },
     );
 
+    // Add new CodeResources
     await zipWriter.add(
       `${currentAppPrefix}_CodeSignature/CodeResources`,
       new Uint8ArrayReader(codeResourcesBytes),
@@ -504,6 +488,7 @@ async function signIpa() {
     );
     filesWritten++;
 
+    // Add provisioning profile
     await zipWriter.add(
       `${currentAppPrefix}embedded.mobileprovision`,
       new Uint8ArrayReader(profileBytes),
@@ -516,8 +501,6 @@ async function signIpa() {
 
     const blob = await zipWriter.close();
     log(`Wrote ${filesWritten} files (${formatSize(blob.size)})`, "ok");
-
-    await zipReader.close();
 
     // 10. Offer download
     const elapsed = ((performance.now() - startTime) / 1000).toFixed(2);
@@ -542,18 +525,13 @@ async function signIpa() {
     log(`Error: ${e.message || e}`, "err");
     console.error(e);
   } finally {
-    if (signer) {
-      try {
-        signer.free();
-      } catch (_) {}
-    }
+    if (zipReader) await zipReader.close().catch(() => {});
+    if (signer) signer.free();
     updateSignButton();
   }
 }
 
 // --- Wire up drop zone ---
-
-dropZone.addEventListener("click", () => fileInput.click());
 
 dropZone.addEventListener("dragover", (e) => {
   e.preventDefault();
@@ -571,7 +549,6 @@ dropZone.addEventListener("drop", (e) => {
 fileInput.addEventListener("change", (e) => {
   const file = e.target.files[0];
   if (file) loadIpa(file);
-  e.target.value = "";
 });
 
 signBtn.addEventListener("click", () => {
