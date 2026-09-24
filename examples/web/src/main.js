@@ -1,13 +1,14 @@
 import initWasm, { WasmSigner } from "zsign-wasm";
 import wasmUrl from "zsign-wasm/zsign_wasm_bg.wasm?url";
-import {
-  ZipReader,
-  ZipWriter,
-  BlobReader,
-  BlobWriter,
-  Uint8ArrayReader,
-  Uint8ArrayWriter,
-} from "@zip.js/zip.js";
+import * as zip from "@zip.js/zip.js";
+
+// ดึง Class มาใช้งานเพื่อป้องกันปัญหา undefined จาก Vite/Bundler
+const ZipReader = zip.ZipReader;
+const ZipWriter = zip.ZipWriter;
+const BlobReader = zip.BlobReader;
+const BlobWriter = zip.BlobWriter;
+const Uint8ArrayReader = zip.Uint8ArrayReader;
+const Uint8ArrayWriter = zip.Uint8ArrayWriter;
 
 const $ = (sel) => document.querySelector(sel);
 const logEl = $("#log-lines");
